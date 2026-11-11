@@ -159,6 +159,11 @@ func Run(ctx context.Context, spec Spec) (*Result, error) {
 		PeakRSS:    peakRSS(state),
 	}
 
+	// Exceeding the output limit is a violation even if the program exited
+	// on its own before it could be terminated.
+	if capture.Exceeded() {
+		return res, fmt.Errorf("%w: more than %d bytes", errdefs.ErrOutputLimit, spec.MaxOutput)
+	}
 	if terminated.Load() {
 		switch {
 		case errors.Is(context.Cause(runCtx), errdefs.ErrOutputLimit):

@@ -11,9 +11,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
+	"hash/fnv"
 	"io"
 	mrand "math/rand/v2"
 	"os"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -123,6 +127,29 @@ func (r *Runner) Run(ctx context.Context, spec backend.RunSpec) (*backend.RunRes
 		return nil, fmt.Errorf("wasm: %w", err)
 	}
 
+	cc, err := r.compilationCache(spec.Uninterruptible)
+	if err != nil {
+		return nil, fmt.Errorf("wasm: compilation cache: %w", err)
+	}
+	// Setup and machine-code compilation use the caller's context only: the
+	// time limit covers execution, not compiling WASM on first use.
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().
+		WithCompilationCache(cc).
+		WithMemoryLimitPages(pages).
+		WithCloseOnContextDone(!spec.Uninterruptible))
+	defer rt.Close(context.Background()) // releases the per-run runtime; nothing to report
+
+	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
+		return nil, fmt.Errorf("wasm: instantiating WASI: %w", err)
+	}
+	if err := instantiateHost(ctx, rt, backend.ModuleSpec{Host: spec.Host, MaxPayload: wire.DefaultMaxPayload}); err != nil {
+		return nil, err
+	}
+	compiled, err := r.compile(ctx, rt, code, spec.Artifact)
+	if err != nil {
+		return nil, err
+	}
+
 	runCtx := ctx
 	if spec.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -131,33 +158,8 @@ func (r *Runner) Run(ctx context.Context, spec backend.RunSpec) (*backend.RunRes
 	}
 	runCtx, cancelCause := context.WithCancelCause(runCtx)
 	defer cancelCause(nil)
-
 	capture := outcap.New(spec.MaxOutput, func() { cancelCause(errdefs.ErrOutputLimit) })
 	stdout, stderr := capture.Stream(spec.Stdout), capture.Stream(spec.Stderr)
-
-	cc, err := r.compilationCache(spec.Uninterruptible)
-	if err != nil {
-		return nil, fmt.Errorf("wasm: compilation cache: %w", err)
-	}
-	rt := wazero.NewRuntimeWithConfig(runCtx, wazero.NewRuntimeConfig().
-		WithCompilationCache(cc).
-		WithMemoryLimitPages(pages).
-		WithCloseOnContextDone(!spec.Uninterruptible))
-	defer rt.Close(context.Background()) // releases the per-run runtime; nothing to report
-
-	if _, err := wasi_snapshot_preview1.Instantiate(runCtx, rt); err != nil {
-		return nil, fmt.Errorf("wasm: instantiating WASI: %w", err)
-	}
-	if err := instantiateHost(runCtx, rt, backend.ModuleSpec{Host: spec.Host, MaxPayload: wire.DefaultMaxPayload}); err != nil {
-		return nil, err
-	}
-	compiled, err := rt.CompileModule(runCtx, code)
-	if err != nil {
-		if strings.Contains(err.Error(), "over limit of") {
-			return nil, fmt.Errorf("%w: %v", errdefs.ErrMemoryLimit, err)
-		}
-		return nil, fmt.Errorf("wasm: compiling module: %w", err)
-	}
 
 	fsCfg := wazero.NewFSConfig()
 	for _, m := range spec.Mounts {
@@ -185,7 +187,8 @@ func (r *Runner) Run(ctx context.Context, spec backend.RunSpec) (*backend.RunRes
 
 	start := time.Now()
 	mod, runErr := rt.InstantiateModule(runCtx, compiled, modCfg)
-	res := &backend.RunResult{Duration: time.Since(start)}
+	finished := time.Now()
+	res := &backend.RunResult{Duration: finished.Sub(start)}
 	if mod != nil {
 		if mem := mod.Memory(); mem != nil {
 			res.PeakMemory = uint64(mem.Size()) // linear memory never shrinks
@@ -195,29 +198,34 @@ func (r *Runner) Run(ctx context.Context, spec backend.RunSpec) (*backend.RunRes
 		}
 	}
 	res.Stdout, res.Stderr = stdout.Bytes(), stderr.Bytes()
+
+	// Decide by what happened before the program finished, not by how it
+	// exited: when the context ends, sleeps and blocked reads return early
+	// and wazero stops the guest asynchronously, so a guest can still finish
+	// "normally" with a truncated sleep. Such a run did not complete within
+	// its limits.
+	var exitErr *sys.ExitError
+	stopped := errors.As(runErr, &exitErr) &&
+		(exitErr.ExitCode() == sys.ExitCodeContextCanceled || exitErr.ExitCode() == sys.ExitCodeDeadlineExceeded)
+	switch {
+	case errors.Is(context.Cause(runCtx), errdefs.ErrOutputLimit):
+		res.ExitCode = -1
+		return res, fmt.Errorf("%w: more than %d bytes", errdefs.ErrOutputLimit, spec.MaxOutput)
+	case ctx.Err() != nil && (stopped || endedBefore(ctx, finished)):
+		res.ExitCode = -1
+		return res, ctx.Err()
+	case stopped || endedBefore(runCtx, finished):
+		res.ExitCode = -1
+		return res, fmt.Errorf("%w: program exceeded %s", errdefs.ErrTimeout, spec.Timeout)
+	}
 	if runErr == nil {
 		return res, nil
 	}
-
-	var exitErr *sys.ExitError
-	if errors.As(runErr, &exitErr) {
-		code := exitErr.ExitCode()
-		if code != sys.ExitCodeContextCanceled && code != sys.ExitCodeDeadlineExceeded {
-			res.ExitCode = int(code)
-			return res, nil
-		}
+	if exitErr != nil {
+		res.ExitCode = int(exitErr.ExitCode())
+		return res, nil
 	}
 	res.ExitCode = -1
-	if runCtx.Err() != nil {
-		switch {
-		case errors.Is(context.Cause(runCtx), errdefs.ErrOutputLimit):
-			return res, fmt.Errorf("%w: more than %d bytes", errdefs.ErrOutputLimit, spec.MaxOutput)
-		case ctx.Err() != nil:
-			return res, ctx.Err()
-		default:
-			return res, fmt.Errorf("%w: program exceeded %s", errdefs.ErrTimeout, spec.Timeout)
-		}
-	}
 	res.Trap = trapReason(runErr)
 	if strings.Contains(string(res.Stderr), "memory allocation of ") {
 		return res, fmt.Errorf("%w: guest memory is limited to %d bytes", errdefs.ErrMemoryLimit, int64(pages)*pageSize)
@@ -304,4 +312,43 @@ func withEntropy(cfg wazero.ModuleConfig, deterministic bool, seed uint64) wazer
 	var key [32]byte
 	binary.LittleEndian.PutUint64(key[:], seed)
 	return cfg.WithRandSource(mrand.NewChaCha8(key))
+}
+
+// endedBefore reports whether ctx's deadline passed (or ctx was cancelled)
+// no later than t.
+func endedBefore(ctx context.Context, t time.Time) bool {
+	if dl, ok := ctx.Deadline(); ok && !t.Before(dl) {
+		return true
+	}
+	return errors.Is(ctx.Err(), context.Canceled)
+}
+
+// compileStripes serialises machine-code compilation of the same module
+// (striped by key): concurrent compiles race on wazero's file cache, which
+// fails on Windows when a cache file is renamed over one being written.
+var compileStripes [64]sync.Mutex
+
+// compile compiles code to machine code, through the persistent cache.
+func (r *Runner) compile(ctx context.Context, rt wazero.Runtime, code []byte, key string) (wazero.CompiledModule, error) {
+	if key == "" {
+		key = strconv.FormatUint(uint64(crc32.ChecksumIEEE(code)), 16)
+	}
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	mu := &compileStripes[h.Sum32()%uint32(len(compileStripes))]
+	mu.Lock()
+	compiled, err := rt.CompileModule(ctx, code)
+	if err != nil && runtime.GOOS == "windows" && strings.Contains(err.Error(), "rename") {
+		// Another process stored the same cache entry concurrently; it is
+		// complete now, so a second attempt loads it.
+		compiled, err = rt.CompileModule(ctx, code)
+	}
+	mu.Unlock()
+	if err != nil {
+		if strings.Contains(err.Error(), "over limit of") {
+			return nil, fmt.Errorf("%w: %v", errdefs.ErrMemoryLimit, err)
+		}
+		return nil, fmt.Errorf("wasm: compiling module: %w", err)
+	}
+	return compiled, nil
 }

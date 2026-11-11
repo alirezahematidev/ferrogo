@@ -280,20 +280,30 @@ func TestRunKillsWholeProcessTree(t *testing.T) {
 }
 
 func TestRunMemoryLimit(t *testing.T) {
-	spec := helperSpec(t, "alloc")
-	spec.MemoryLimit = 64 << 20
-	spec.Timeout = 30 * time.Second
-	res, err := Run(context.Background(), spec)
 	if !treeMemoryLimits {
-		if err == nil {
+		spec := helperSpec(t, "alloc")
+		spec.MemoryLimit = 64 << 20
+		if _, err := Run(context.Background(), spec); err == nil {
 			t.Fatal("memory limit accepted on a platform that cannot enforce it")
 		}
 		return
 	}
+	// Verify the Job Object carries the limit. Behaviour under the limit is
+	// covered end to end by TestNativeMemoryLimit with a Rust program; a Go
+	// helper is unsuitable, because the Go runtime may stall rather than exit
+	// when memory commits fail.
+	spec := helperSpec(t, "sleep")
+	spec.MemoryLimit = 64 << 20
+	p, err := Start(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.ExitCode == 0 {
-		t.Errorf("allocation of 512 MiB succeeded under a 64 MiB limit: %q", res.Stdout)
+	limit, err := jobMemoryLimit(p.tree)
+	if killErr := p.Kill(); killErr != nil {
+		t.Error(killErr)
+	}
+	<-p.Done()
+	if err != nil || limit != 64<<20 {
+		t.Fatalf("job memory limit = %d, %v; want %d", limit, err, 64<<20)
 	}
 }

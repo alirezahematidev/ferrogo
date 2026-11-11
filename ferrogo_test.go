@@ -414,3 +414,20 @@ func TestNativeMemoryLimit(t *testing.T) {
 		t.Fatalf("err = %v (stdout %q), want ErrMemoryLimit", err, res.Stdout)
 	}
 }
+
+// TestOutputLimitWhenProgramExitsFirst: a program that exceeds the limit and
+// exits before it can be stopped must still fail with ErrOutputLimit.
+func TestOutputLimitWhenProgramExitsFirst(t *testing.T) {
+	code := ferrogo.Code(`fn main() { print!("{}", "x".repeat(200_000)); }`)
+	for _, rt := range []*ferrogo.Runtime{nativeRuntime(t), wasmRuntime(t)} {
+		for _, b := range []ferrogo.Backend{ferrogo.BackendNativeProcess, ferrogo.BackendWASM} {
+			res, err := rt.Run(context.Background(), code, ferrogo.WithBackend(b), ferrogo.WithMaxOutput(1024))
+			if errors.Is(err, ferrogo.ErrUntrusted) {
+				continue // the WASM-only runtime cannot use the native backend
+			}
+			if !errors.Is(err, ferrogo.ErrOutputLimit) || len(res.Stdout) != 1024 {
+				t.Errorf("%s: err = %v, %d bytes captured; want ErrOutputLimit with 1024 bytes", b, err, len(res.Stdout))
+			}
+		}
+	}
+}

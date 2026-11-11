@@ -84,6 +84,7 @@ func (s SourceFile) Locate(line, col int) (string, int, int) {
 // panics print it) through the matching source; ok is false if no source
 // matches.
 func LocateGenerated(sources []SourceFile, file string, line, col int) (string, int, int, bool) {
+	file = slashPath(file) // panics print src\main.rs on Windows
 	for _, s := range sources {
 		if file == "src/"+s.Path {
 			f, l, c := s.Locate(line, col)
@@ -545,4 +546,13 @@ func (g *flightGroup) do(key string, fn func() (*Artifact, error)) (*Artifact, e
 	}()
 	call.val, call.err = fn()
 	return call.val, call.err, false
+}
+
+// slashPath converts a relative path reported by rustc or a panic to
+// forward slashes. Absolute paths (C:\..., /...) are returned unchanged.
+func slashPath(p string) string {
+	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
+		return p
+	}
+	return strings.ReplaceAll(p, "\\", "/")
 }

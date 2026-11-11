@@ -124,11 +124,8 @@ func (r *Runner) LoadModule(ctx context.Context, code []byte, spec backend.Modul
 	if err := instantiateHost(ctx, rt, spec); err != nil {
 		return fail(err)
 	}
-	if m.compiled, err = rt.CompileModule(ctx, code); err != nil {
-		if strings.Contains(err.Error(), "over limit of") {
-			return fail(fmt.Errorf("%w: %v", errdefs.ErrMemoryLimit, err))
-		}
-		return fail(fmt.Errorf("wasm: compiling module: %w", err))
+	if m.compiled, err = r.compile(ctx, rt, code, ""); err != nil {
+		return fail(err)
 	}
 	m.exports = m.compiled.ExportedFunctions()
 	exports := m.exports
@@ -269,9 +266,14 @@ func (m *Module) invoke(ctx context.Context, export string, input []byte, withIn
 	inst.callCtx.Store(&callCtx)
 	status, out, healthy, err := m.call(callCtx, inst, export, input, withInput)
 	inst.callCtx.Store(nil)
-	if healthy {
+	if healthy && !endedBefore(callCtx, time.Now()) {
 		m.release(inst)
 		return status, out, err
+	}
+	if healthy {
+		// The call finished only after its deadline (for example after a
+		// sleep cut short by the deadline): its result cannot be trusted.
+		healthy = false
 	}
 	// The instance trapped or was interrupted: never reuse it.
 	defer discard(inst)
@@ -426,6 +428,9 @@ func (m *Module) CallRaw(ctx context.Context, name string, args []uint64) ([]uin
 	inst.callCtx.Store(&callCtx)
 	res, err := inst.fn(name).Call(callCtx, args...)
 	inst.callCtx.Store(nil)
+	if err == nil && endedBefore(callCtx, time.Now()) {
+		err = context.DeadlineExceeded // finished only after its deadline: discard
+	}
 	if err == nil {
 		m.release(inst)
 		return res, nil

@@ -189,6 +189,8 @@ func newSourceMapper(sources []SourceFile) sourceMapper {
 }
 
 func (m sourceMapper) locate(file string, line, col int) (string, int, int, bool) {
+	// rustc reports src\main.rs on Windows.
+	file = slashPath(file)
 	if src, ok := m.files[file]; ok {
 		f, l, c := src.Locate(line, col)
 		return f, l, c, true

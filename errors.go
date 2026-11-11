@@ -253,7 +253,8 @@ func snippetLocator(sources []compiler.SourceFile) locator {
 func projectLocator(dir string) locator {
 	return func(file string, line, col int) (string, int, int) {
 		if !filepath.IsAbs(file) && !strings.HasPrefix(file, "/rustc/") {
-			file = filepath.ToSlash(filepath.Join(dir, file))
+			// rustc reports src\main.rs on Windows.
+			file = filepath.ToSlash(filepath.Join(dir, strings.ReplaceAll(file, "\\", "/")))
 		}
 		return file, line, col
 	}

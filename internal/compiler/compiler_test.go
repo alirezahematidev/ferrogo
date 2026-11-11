@@ -327,3 +327,24 @@ func TestBuildTimeoutIntegration(t *testing.T) {
 		t.Fatalf("err = %v, want ErrTimeout", err)
 	}
 }
+
+// TestWindowsPathsAreMapped feeds the real cargo fixture with the backslash
+// paths rustc reports on Windows (src\main.rs).
+func TestWindowsPathsAreMapped(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "cargo-error.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.ReplaceAll(string(data), "src/main.rs", `src\\main.rs`)) // JSON-escaped backslash
+	out := parseCargoJSON(data, newSourceMapper([]SourceFile{{Path: "main.rs", DisplayName: "calc.go", LineOffset: 10}}))
+	if len(out.diagnostics) != 1 {
+		t.Fatalf("diagnostics = %+v", out.diagnostics)
+	}
+	d := out.diagnostics[0]
+	if d.Location() != "calc.go:12:18" || !strings.Contains(d.Rendered, "--> calc.go:12:18") {
+		t.Errorf("Windows path not mapped: %s\n%s", d.Location(), d.Rendered)
+	}
+	if f, l, _, ok := LocateGenerated([]SourceFile{{Path: "lib.rs", DisplayName: "x.go", LineOffset: 2}}, `src\lib.rs`, 3, 1); !ok || f != "x.go" || l != 5 {
+		t.Errorf("LocateGenerated(src\\lib.rs) = %s:%d ok=%v", f, l, ok)
+	}
+}

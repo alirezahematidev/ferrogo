@@ -25,6 +25,14 @@ func TestParsePanic(t *testing.T) {
 	if p == nil || p.Thread != "main" || p.Line != 3 || p.Column != 14 || p.Message != "boom" {
 		t.Errorf("thread-id format = %+v", p)
 	}
+	// Windows prints panic locations with backslashes.
+	p = parsePanic("thread 'main' (1) panicked at src\\main.rs:4:14:\nboom\n", snippetLocator([]compiler.SourceFile{{Path: "main.rs", DisplayName: "prog.rs"}}))
+	if p == nil || p.File != "prog.rs" || p.Line != 4 {
+		t.Errorf("Windows panic path = %+v", p)
+	}
+	if got, _, _ := projectLocator("proj")(`src\main.rs`, 1, 1); got != "proj/src/main.rs" {
+		t.Errorf("Windows project path = %q", got)
+	}
 	if parsePanic("thread 'main' did not panic", nil) != nil {
 		t.Error("false positive")
 	}
