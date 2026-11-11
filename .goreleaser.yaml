@@ -1,0 +1,57 @@
+# GoReleaser configuration for the ferrogo CLI. Run by
+# .github/workflows/release.yml when a v* tag is pushed.
+# Docs: https://goreleaser.com/customization/
+version: 2
+
+project_name: ferrogo
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod verify
+
+builds:
+  - id: ferrogo
+    main: ./cmd/ferrogo
+    binary: ferrogo
+    env:
+      # The CLI is pure Go; this keeps release binaries static and
+      # cross-compilable for every target below.
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}" # reproducible builds
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: ferrogo
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  # Release notes come from CHANGELOG.md (see docs/releasing.md).
+  disable: true
+
+release:
+  github:
+    owner: alirezahematidev
+    name: ferrogo
+  # v0.x releases are pre-1.0: mark them as pre-releases on GitHub.
+  prerelease: auto

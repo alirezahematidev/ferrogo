@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: vet (all target OSes)
+        run: make vet
+      - name: staticcheck
+        run: make staticcheck
+      - name: govulncheck
+        run: make vulncheck
+      - name: generated code is up to date
+        run: make generate-check
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest      # linux/amd64
+          - ubuntu-24.04-arm   # linux/arm64
+          - macos-latest       # darwin/arm64
+          - macos-15-intel     # darwin/amd64
+          - windows-latest     # windows/amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - name: bubblewrap (Linux sandbox tests)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: toolchain
+        run: go run ./cmd/ferrogo doctor
+      - name: test (race)
+        if: runner.os != 'Windows'
+        run: go test -race -count=1 ./...
+      - name: test
+        if: runner.os == 'Windows'
+        run: go test -count=1 ./...
+      - name: examples
+        if: runner.os != 'Windows'
+        run: make examples
+
+  # Unit tests must pass without any Rust toolchain installed.
+  no-toolchain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: test without rustc/cargo on PATH
+        run: |
+          GO_BIN="$(dirname "$(command -v go)")"
+          env PATH="$GO_BIN:/usr/bin:/bin" sh -c '! command -v rustc && go test -count=1 ./...'

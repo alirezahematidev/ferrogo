@@ -1,0 +1,32 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the GitHub release and upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # GoReleaser needs the tag history
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: unit tests
+        run: go test -short -count=1 ./...
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Ask the Go module proxy to fetch the new version so that it appears
+      # on pkg.go.dev without waiting for someone to `go get` it.
+      - name: publish to proxy.golang.org and pkg.go.dev
+        run: GOPROXY=https://proxy.golang.org GOFLAGS=-mod=mod go list -m "github.com/alirezahematidev/ferrogo@${GITHUB_REF_NAME}"

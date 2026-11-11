@@ -1,0 +1,5 @@
+/bin/
+/.ferrogo/
+*.test
+*.out
+coverage.txt
