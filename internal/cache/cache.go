@@ -29,6 +29,28 @@ const touchInterval = time.Minute
 
 var keyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// errCorrupt marks an entry that must be deleted and rebuilt. Any other read
+// error is treated as transient and leaves the entry in place.
+var errCorrupt = errors.New("corrupt entry")
+
+// rename is os.Rename, replaceable in tests.
+var rename = os.Rename
+
+// retry runs op until it succeeds, reports a missing file or corruption, or
+// seven retries (about 130 ms of backoff) fail. Windows refuses to open or
+// replace a file while another goroutine or process is replacing it.
+func retry(op func() error) error {
+	err := op()
+	for wait := time.Millisecond; err != nil && wait <= 64*time.Millisecond; wait *= 2 {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errCorrupt) {
+			break
+		}
+		time.Sleep(wait)
+		err = op()
+	}
+	return err
+}
+
 // Cache is a handle to a cache directory. It is safe for concurrent use by
 // multiple goroutines and multiple processes.
 type Cache struct {
@@ -114,39 +136,51 @@ func (c *Cache) Get(key string) (entry *Entry, ok bool, err error) {
 		return nil, false, fmt.Errorf("cache: invalid key %q", key)
 	}
 	dir := c.entryDir(key)
-	meta, err := readMeta(filepath.Join(dir, "meta.json"))
+	var meta Meta
+	err = retry(func() error {
+		var err error
+		if meta, err = readMeta(filepath.Join(dir, "meta.json")); err == nil {
+			err = c.verify(dir, key, meta)
+		}
+		return err
+	})
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, false, nil
 	}
-	if err == nil {
-		err = c.verify(dir, key, meta)
-	}
-	if err != nil {
+	if errors.Is(err, errCorrupt) {
 		// Never reuse an artifact whose fingerprint or content does not match.
 		if rmErr := removeAll(dir); rmErr != nil {
 			return nil, false, fmt.Errorf("cache: removing corrupt entry %s: %w", key, rmErr)
 		}
 		return nil, false, nil
 	}
+	if err != nil {
+		// A transient I/O error is not corruption: keep the entry.
+		return nil, false, fmt.Errorf("cache: reading entry %s (check the cache directory permissions, or retry if another process holds it): %w", key, err)
+	}
 	if now := c.now(); now.Sub(meta.LastUsed) > touchInterval {
 		meta.LastUsed = now
-		if err := writeMeta(dir, meta); err != nil {
-			return nil, false, fmt.Errorf("cache: updating last-used time: %w", err)
-		}
+		// The last-used time is only an eviction hint. A failed update (for
+		// example while another reader replaces meta.json on Windows) must
+		// not fail the lookup.
+		_ = writeMeta(dir, meta)
 	}
 	return &Entry{Key: key, Path: filepath.Join(dir, meta.File), Meta: meta}, true, nil
 }
 
 func (c *Cache) verify(dir, key string, meta Meta) error {
 	if meta.Schema != SchemaVersion || meta.Key != key || meta.File == "" || filepath.Base(meta.File) != meta.File {
-		return errors.New("metadata mismatch")
+		return fmt.Errorf("%w: metadata mismatch", errCorrupt)
 	}
 	sum, size, err := hashFile(filepath.Join(dir, meta.File))
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: artifact missing", errCorrupt)
+	}
 	if err != nil {
 		return err
 	}
 	if size != meta.Size || sum != meta.SHA256 {
-		return errors.New("artifact content mismatch")
+		return fmt.Errorf("%w: artifact content mismatch", errCorrupt)
 	}
 	return nil
 }
@@ -350,7 +384,7 @@ func readMeta(path string) (Meta, error) {
 	}
 	var m Meta
 	if err := json.Unmarshal(data, &m); err != nil {
-		return Meta{}, fmt.Errorf("corrupt metadata: %w", err)
+		return Meta{}, fmt.Errorf("%w: metadata: %v", errCorrupt, err)
 	}
 	return m, nil
 }
@@ -380,7 +414,7 @@ func writeMeta(dir string, m Meta) error {
 		os.Remove(tmp)
 		return err
 	}
-	if err := os.Rename(tmp, filepath.Join(dir, "meta.json")); err != nil {
+	if err := retry(func() error { return rename(tmp, filepath.Join(dir, "meta.json")) }); err != nil {
 		os.Remove(tmp)
 		return err
 	}

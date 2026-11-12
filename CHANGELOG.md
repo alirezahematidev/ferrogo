@@ -8,6 +8,13 @@ API may change in minor releases; such changes are listed under
 
 ## [Unreleased]
 
+### Fixed
+
+- Cache: concurrent use of the same cached artifact on Windows no longer
+  fails with `cache: updating last-used time: ... Access is denied`. A
+  failed last-used update no longer fails the lookup, and a transient read
+  error no longer deletes a valid artifact as corrupt.
+
 ## [0.1.0] - 2026-11-11
 
 First public release. All eight phases of the [roadmap](docs/roadmap.md)
