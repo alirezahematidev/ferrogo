@@ -16,6 +16,9 @@ API may change in minor releases; such changes are listed under
   Same artifacts, sandbox, limits and trust rules as `BackendWASM`, which
   stays the default. `WithWASMInterruption(false)` returns `ErrUnsupported`
   on it. Compiled machine code is cached in a separate `wazy` subdirectory.
+  On Windows, build with Go 1.27.2 or newer when using it (GO-2026-6604).
+- `ferrogo generate` accepts `--backend wazy`; the generated files are the
+  same as with `--backend wasm`.
 
 ## [0.1.0] - 2026-11-11
 

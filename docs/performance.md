@@ -105,6 +105,35 @@ For trusted code, `WithWASMInterruption(false)` removes them. In
 
 Loop-heavy code with few calls pays much less.
 
+## wazero vs wazy
+
+Both engines measured in one test binary, as `engine=wazero` and
+`engine=wazy` sub-benchmarks of the same cases, with
+`-benchmem -count=10` and compared with `benchstat -col /engine` (median of
+10 samples; every difference p=0.000 except `bytes-64KiB`, p=0.001).
+Machine: AMD Ryzen 7 7445HS, Windows 11 (windows/amd64), Go 1.27.4, Rust
+1.99.1, wazero 1.12.0, wazy 0.7.0. Cache warm; `Call` cases reuse one
+`Module`; wazero runs with interruption on (the default).
+
+| Benchmark | wazero | wazy | Change |
+| --- | --- | --- | --- |
+| `Compile` of a cached library (module load) | 3.39 ms | 2.00 ms | -41% |
+| `Call` `add(i32, i32)` | 4.29 µs | 1.85 µs | -57% |
+| `Call` `fib(30)` | 72.1 ms | 5.60 ms | -92% |
+| `Call` echo 1 KiB `String` | 13.6 µs | 4.31 µs | -68% |
+| `Call` echo 64 KiB `Vec<u8>` | 67.3 µs | 61.5 µs | -9% |
+| `Call` echo JSON | 6.79 µs | 3.23 µs | -52% |
+| Parallel `add` (per call, 12 threads) | 1.38 µs | 0.62 µs | -55% |
+| Parallel `fib(30)` (per call, 12 threads) | 7.99 ms | 0.66 ms | -92% |
+| `Run` of a cached trivial program | 3.14 ms | 2.46 ms | -22% |
+| 1000 host-function calls from the guest | 6.89 ms | 1.53 ms | -78% |
+| Geometric mean (time / B/op / allocs) | | | -67% / -52% / -38% |
+
+The `fib(30)` gap is of the same size as the interruption cost described
+above: wazy stays interruptible without most of that cost. Reproduce with
+any benchmark that runs the same case under `WithBackend(BackendWASM)` and
+`WithBackend(BackendWazy)` in one binary.
+
 ## Guidance
 
 * Reuse one `Runtime`. It caches toolchain detection, which costs about

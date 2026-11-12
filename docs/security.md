@@ -131,6 +131,13 @@ The wazy backend (`BackendWazy`) always compiles the checks in, so there it
 returns `ErrUnsupported` instead; it is never silently ignored. wazy keeps
 its compiled code in its own cache directory.
 
+On Windows, build programs that use `BackendWazy` with Go 1.27.2 or newer.
+wazy's WASI file system uses `os.Root`, and in older Go releases
+`os.Root.Mkdir`/`MkdirAll` could follow an NTFS junction out of the root
+(GO-2026-6604), which would let a guest create directories outside a
+mounted directory. The wazero backend does not use `os.Root` and is not
+affected.
+
 ## Choosing settings
 
 * **Code from end users or the network:** use the default trust policy
