@@ -19,6 +19,10 @@ const (
 	BackendAuto Backend = "auto"
 	// BackendWASM runs code in the wazero WebAssembly sandbox (wasm32-wasip1).
 	BackendWASM Backend = "wasm"
+	// BackendWazy runs code in the wazy WebAssembly sandbox, a wazero fork
+	// whose compiled code is always interruptible. Same sandbox and trust
+	// rules as BackendWASM; WithWASMInterruption(false) is unsupported.
+	BackendWazy Backend = "wazy"
 	// BackendNativeProcess runs native executables as child processes.
 	// Not a sandbox; requires WithTrust(Trusted).
 	BackendNativeProcess Backend = "native-process"
@@ -28,9 +32,9 @@ const (
 )
 
 // Backends lists the concrete backends.
-var Backends = []Backend{BackendWASM, BackendNativeProcess, BackendNativeLibrary}
+var Backends = []Backend{BackendWASM, BackendWazy, BackendNativeProcess, BackendNativeLibrary}
 
-// ParseBackend parses a backend name. It accepts "auto", "wasm",
+// ParseBackend parses a backend name. It accepts "auto", "wasm", "wazy",
 // "native-process" (alias "native", "process"), and "native-library"
 // (aliases "library", "shared", "dylib").
 func ParseBackend(s string) (Backend, error) {
@@ -39,20 +43,34 @@ func ParseBackend(s string) (Backend, error) {
 		return BackendAuto, nil
 	case "wasm", "webassembly":
 		return BackendWASM, nil
+	case "wazy":
+		return BackendWazy, nil
 	case "native-process", "native", "process":
 		return BackendNativeProcess, nil
 	case "native-library", "library", "shared", "dylib":
 		return BackendNativeLibrary, nil
 	}
-	return "", fmt.Errorf("ferrogo: unknown backend %q (want auto, wasm, native-process or native-library)", s)
+	return "", fmt.Errorf("ferrogo: unknown backend %q (want auto, wasm, wazy, native-process or native-library)", s)
 }
 
 func (b Backend) valid() bool {
 	switch b {
-	case BackendAuto, BackendWASM, BackendNativeProcess, BackendNativeLibrary:
+	case BackendAuto, BackendWASM, BackendWazy, BackendNativeProcess, BackendNativeLibrary:
 		return true
 	}
 	return false
+}
+
+// isWASM reports whether b runs wasm32-wasip1 code in a WebAssembly engine.
+func (b Backend) isWASM() bool { return b == BackendWASM || b == BackendWazy }
+
+// artifactBackend is the backend artifacts are built and cached for: both
+// WASM engines run the same wasm32-wasip1 file.
+func (b Backend) artifactBackend() Backend {
+	if b.isWASM() {
+		return BackendWASM
+	}
+	return b
 }
 
 // native reports whether b executes native machine code outside a sandbox.
@@ -148,7 +166,7 @@ func CapabilitiesOf(b Backend) Capabilities {
 		}
 	case BackendNativeLibrary:
 		return Capabilities{Backend: b, Call: dylib.Supported, Threads: true, RequiresTrust: true}
-	case BackendWASM:
+	case BackendWASM, BackendWazy:
 		return Capabilities{
 			Backend: b, Run: true, Call: true, CaptureOutput: true, Stdin: true, Env: true, Args: true,
 			Interruptible: true, MemoryLimit: true, FilesystemIsolation: true,

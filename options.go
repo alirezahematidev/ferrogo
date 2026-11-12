@@ -429,7 +429,8 @@ func WithWASMMemoryLimit(n int64) SharedOption {
 // makes call-heavy code up to ~9x faster (docs/performance.md) but running
 // code can then only finish on its own: it requires WithTrust(Trusted), and
 // an explicit WithTimeout is rejected with ErrUnsupported. Compiled code is
-// cached separately for each setting.
+// cached separately for each setting. On BackendWazy, which always checks,
+// WithWASMInterruption(false) returns ErrUnsupported.
 func WithWASMInterruption(enabled bool) SharedOption {
 	return sharedOption(func(c *config) error { c.wasmUninterruptible = !enabled; return nil })
 }

@@ -148,7 +148,7 @@ func TestCloneIsDeep(t *testing.T) {
 }
 
 func TestBackendParsingAndCapabilities(t *testing.T) {
-	for in, want := range map[string]Backend{"": BackendAuto, "WASM": BackendWASM, "native": BackendNativeProcess, "dylib": BackendNativeLibrary} {
+	for in, want := range map[string]Backend{"": BackendAuto, "WASM": BackendWASM, "Wazy": BackendWazy, "native": BackendNativeProcess, "dylib": BackendNativeLibrary} {
 		if got, err := ParseBackend(in); err != nil || got != want {
 			t.Errorf("ParseBackend(%q) = %q, %v", in, got, err)
 		}

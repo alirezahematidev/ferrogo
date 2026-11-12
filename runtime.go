@@ -16,6 +16,7 @@ import (
 	"github.com/alirezahematidev/ferrogo/internal/backend/dylib"
 	"github.com/alirezahematidev/ferrogo/internal/backend/native"
 	"github.com/alirezahematidev/ferrogo/internal/backend/wasm"
+	"github.com/alirezahematidev/ferrogo/internal/backend/wasmwazy"
 	"github.com/alirezahematidev/ferrogo/internal/cache"
 	"github.com/alirezahematidev/ferrogo/internal/compiler"
 	"github.com/alirezahematidev/ferrogo/internal/toolchain"
@@ -44,6 +45,7 @@ type Runtime struct {
 
 	runners map[Backend]backend.Runner
 	wasm    *wasm.Runner
+	wazy    *wasmwazy.Runner
 	modules map[*Module]struct{} // open modules, closed by Close
 }
 
@@ -100,6 +102,23 @@ func New(opts ...Option) (*Runtime, error) {
 	}
 	r.runners[BackendWASM] = wasmRunner
 	r.wasm = wasmRunner
+	// wazy compiles different machine code, so it gets its own cache.
+	wazyDir := ""
+	if cfg.cache {
+		if wazyDir, err = c.Subdir("wazy"); err != nil {
+			_ = wasmRunner.Close() // already failing; report the original error
+			r.removeTemp()
+			return nil, fmt.Errorf("ferrogo: %w", err)
+		}
+	}
+	wazyRunner, err := wasmwazy.New(wazyDir)
+	if err != nil {
+		_ = wasmRunner.Close() // already failing; report the original error
+		r.removeTemp()
+		return nil, fmt.Errorf("ferrogo: %w", err)
+	}
+	r.runners[BackendWazy] = wazyRunner
+	r.wazy = wazyRunner
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	return r, nil
 }
@@ -201,7 +220,7 @@ func (r *Runtime) resolveBackend(b Backend) (Backend, error) {
 
 // target returns the target triple for backend b and artifact kind.
 func target(tc *toolchain.Toolchain, b Backend) (string, error) {
-	if b == BackendWASM {
+	if b.isWASM() {
 		return wasmTarget, nil
 	}
 	return tc.NativeTarget(runtime.GOOS, runtime.GOARCH)
@@ -260,7 +279,7 @@ func (r *Runtime) build(ctx context.Context, cfg *config, src Source, kind Artif
 	}
 	// The ABI helper (ferrogo::export!/import!) is part of every library and
 	// every WASM program, which can call host functions.
-	if kind == ArtifactLibrary || (b == BackendWASM && cfg.edition != "2015") {
+	if kind == ArtifactLibrary || (b.isWASM() && cfg.edition != "2015") {
 		if cfg.edition == "2015" {
 			return nil, nil, errors.New("ferrogo: libraries require Rust edition 2018 or later")
 		}
@@ -293,7 +312,7 @@ func (r *Runtime) build(ctx context.Context, cfg *config, src Source, kind Artif
 		}
 	}
 	a, err := comp.Build(ctx, compiler.Request{
-		Sources: sources, Kind: ckind, Target: triple, Backend: string(b),
+		Sources: sources, Kind: ckind, Target: triple, Backend: string(b.artifactBackend()),
 		Profile: string(cfg.profile), OptLevel: cfg.optLevel, Edition: cfg.edition,
 		Panic: panicStrategy, RustFlags: cfg.rustFlags, Env: cfg.buildEnv,
 		Timeout: cfg.compileTimeout, Progress: cfg.buildOutput, NoCache: !r.cfg.cache,
@@ -362,7 +381,7 @@ func (r *Runtime) run(ctx context.Context, src Source, opts []RunOption) (*Resul
 		return nil, &UnsupportedError{Backend: b, Feature: "WithSandbox",
 			Hint: "the WASM backend is always sandboxed; grant directories with WithMount"}
 	}
-	if cfg.deterministic && b != BackendWASM {
+	if cfg.deterministic && !b.isWASM() {
 		return nil, &UnsupportedError{Backend: b, Feature: "deterministic execution", Hint: "use the wasm backend"}
 	}
 	if len(cfg.mounts) > 0 && !caps.FilesystemIsolation {
@@ -382,7 +401,7 @@ func (r *Runtime) run(ctx context.Context, src Source, opts []RunOption) (*Resul
 		return nil, err
 	}
 	memLimit := cfg.memoryLimit
-	if b == BackendWASM && memLimit == 0 {
+	if b.isWASM() && memLimit == 0 {
 		memLimit = cfg.wasmMemory
 	}
 	mounts := make([]backend.Mount, len(cfg.mounts))
@@ -390,14 +409,14 @@ func (r *Runtime) run(ctx context.Context, src Source, opts []RunOption) (*Resul
 		mounts[i] = backend.Mount(m)
 	}
 	timeout := cfg.timeout
-	if cfg.wasmUninterruptible && b == BackendWASM {
+	if cfg.wasmUninterruptible && b.isWASM() {
 		timeout = 0 // cannot be enforced; checkInterruption rejected explicit timeouts
 	}
 	out, err := runner.Run(ctx, backend.RunSpec{
 		Artifact: art.Path, Args: cfg.args, Env: execEnv(&cfg), Dir: cfg.dir,
 		Stdin: cfg.stdin, Stdout: cfg.stdout, Stderr: cfg.stderr,
 		Timeout: timeout, GracePeriod: cfg.grace, MaxOutput: cfg.maxOutput,
-		MemoryLimit: memLimit, Mounts: mounts, Uninterruptible: cfg.wasmUninterruptible && b == BackendWASM,
+		MemoryLimit: memLimit, Mounts: mounts, Uninterruptible: cfg.wasmUninterruptible && b.isWASM(),
 		Sandbox: (*backend.Sandbox)(cfg.sandbox), Host: hostDispatcher(cfg.hostFuncs),
 		Deterministic: cfg.deterministic, Seed: cfg.seed,
 	})
@@ -495,7 +514,7 @@ func (r *Runtime) LoadModule(ctx context.Context, path string, opts ...CompileOp
 	if err != nil {
 		return nil, err
 	}
-	if b != detected && !(detected == BackendNativeLibrary && b == BackendNativeProcess) {
+	if b != detected && !(detected == BackendNativeLibrary && b == BackendNativeProcess) && !(detected == BackendWASM && b.isWASM()) {
 		return nil, fmt.Errorf("ferrogo: %s is a %s artifact but the %s backend was requested", path, detected, b)
 	}
 	abs, err := filepath.Abs(path)
@@ -517,7 +536,7 @@ func (r *Runtime) LoadWASM(ctx context.Context, code []byte, opts ...CompileOpti
 	if err != nil {
 		return nil, err
 	}
-	if b != BackendWASM {
+	if !b.isWASM() {
 		return nil, fmt.Errorf("ferrogo: LoadWASM cannot use the %s backend", b)
 	}
 	return r.load(opCtx, &cfg, b, "", code, ModuleInfo{Backend: b}, nil)
@@ -550,7 +569,7 @@ func (r *Runtime) moduleConfig(opts []CompileOption) (config, Backend, error) {
 		return cfg, "", &UnsupportedError{Backend: b, Feature: "WithSandbox",
 			Hint: "only native processes use the OS sandbox (WASM is always sandboxed)"}
 	}
-	if cfg.deterministic && b != BackendWASM {
+	if cfg.deterministic && !b.isWASM() {
 		return cfg, "", &UnsupportedError{Backend: b, Feature: "deterministic execution", Hint: "use the wasm backend"}
 	}
 	if b == BackendNativeProcess {
@@ -588,7 +607,7 @@ func (r *Runtime) moduleConfig(opts []CompileOption) (config, Backend, error) {
 func (r *Runtime) load(ctx context.Context, cfg *config, b Backend, path string, code []byte, info ModuleInfo, loc locator) (*Module, error) {
 	var impl backend.Module
 	switch b {
-	case BackendWASM:
+	case BackendWASM, BackendWazy:
 		if code == nil {
 			var err error
 			if code, err = os.ReadFile(path); err != nil {
@@ -607,16 +626,21 @@ func (r *Runtime) load(ctx context.Context, cfg *config, b Backend, path string,
 		if cfg.wasmUninterruptible {
 			callTimeout = 0 // cannot be enforced; see checkInterruption
 		}
-		m, err := r.wasm.LoadModule(ctx, code, backend.ModuleSpec{
+		spec := backend.ModuleSpec{
 			Env: execEnv(cfg), Mounts: mounts, MemoryLimit: memLimit,
 			CallTimeout: callTimeout, MaxPayload: wire.DefaultMaxPayload,
 			Uninterruptible: cfg.wasmUninterruptible, Host: hostDispatcher(cfg.hostFuncs),
 			Deterministic: cfg.deterministic, Seed: cfg.seed,
-		})
+		}
+		var err error
+		if b == BackendWazy {
+			impl, err = r.wazy.LoadModule(ctx, code, spec)
+		} else {
+			impl, err = r.wasm.LoadModule(ctx, code, spec)
+		}
 		if err != nil {
 			return nil, err
 		}
-		impl = m
 	case BackendNativeLibrary:
 		lib, err := dylib.Open(path, wire.DefaultMaxPayload)
 		if err != nil {
@@ -701,7 +725,7 @@ func (r *Runtime) buildProject(ctx context.Context, cfg *config, p Project, kind
 		ckind = compiler.KindLibrary
 	}
 	a, err := comp.BuildProject(ctx, compiler.ProjectRequest{
-		Dir: dir, DisplayDir: filepath.ToSlash(string(p)), Kind: ckind, Target: triple, Backend: string(b),
+		Dir: dir, DisplayDir: filepath.ToSlash(string(p)), Kind: ckind, Target: triple, Backend: string(b.artifactBackend()),
 		Profile: string(cfg.profile), RustFlags: cfg.rustFlags, Env: cfg.buildEnv,
 		Timeout: cfg.compileTimeout, Progress: cfg.buildOutput, Network: r.cfg.depPolicy.Network,
 	}, info)
@@ -723,11 +747,15 @@ func (r *Runtime) buildProject(ctx context.Context, cfg *config, p Project, kind
 
 // checkInterruption validates WithWASMInterruption(false).
 func (r *Runtime) checkInterruption(cfg *config, b Backend) error {
-	if !cfg.wasmUninterruptible || b != BackendWASM {
+	if !cfg.wasmUninterruptible || !b.isWASM() {
 		return nil
 	}
 	if r.cfg.trust != Trusted {
 		return fmt.Errorf("%w: WithWASMInterruption(false) lets guest code run forever; it requires WithTrust(Trusted)", ErrUntrusted)
+	}
+	if b == BackendWazy { // wazy always compiles the checks in; never ignore the request
+		return &UnsupportedError{Backend: b, Feature: "disabling WASM interruption checks",
+			Hint: "use the wasm backend, or keep WithWASMInterruption(true)"}
 	}
 	if cfg.timeoutSet && cfg.timeout > 0 {
 		return &UnsupportedError{Backend: b, Feature: "timeouts without interruption checks",

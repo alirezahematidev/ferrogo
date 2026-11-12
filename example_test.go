@@ -124,6 +124,7 @@ func ExampleCapabilitiesOf() {
 	}
 	// Output:
 	// wasm            sandboxed=true  interruptible=true  requires-trust=false
+	// wazy            sandboxed=true  interruptible=true  requires-trust=false
 	// native-process  sandboxed=false interruptible=true  requires-trust=true
 	// native-library  sandboxed=false interruptible=false requires-trust=true
 }

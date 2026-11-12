@@ -3,12 +3,14 @@
 //
 // A Runtime drives the user's Rust toolchain (rustc and cargo), caches
 // compiled artifacts by a SHA-256 fingerprint of every build input, and
-// executes them on one of three backends:
+// executes them on one of four backends:
 //
 //   - BackendWASM runs code in the wazero WebAssembly sandbox. It is the
-//     default (BackendAuto) and the only backend allowed for untrusted code:
+//     default (BackendAuto) and, with BackendWazy, the only backend allowed for untrusted code:
 //     guests see no files, network or environment unless granted, and
 //     memory, time and output are limited.
+//   - BackendWazy is the same sandbox on the wazy engine (a wazero fork that
+//     is always interruptible); opt in with WithBackend(BackendWazy).
 //   - BackendNativeProcess runs native executables, and serves library calls
 //     from worker processes, optionally under the OS sandbox (WithSandbox).
 //   - BackendNativeLibrary loads a native shared library into the Go process

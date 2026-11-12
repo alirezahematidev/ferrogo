@@ -58,7 +58,7 @@ type moduleCase struct {
 // moduleCases returns runtimes for every backend that can call functions here.
 func moduleCases(t *testing.T) []moduleCase {
 	t.Helper()
-	cases := []moduleCase{{ferrogo.BackendWASM, wasmRuntime(t)}}
+	cases := []moduleCase{{ferrogo.BackendWASM, wasmRuntime(t)}, {ferrogo.BackendWazy, wasmRuntime(t)}}
 	for _, b := range []ferrogo.Backend{ferrogo.BackendNativeLibrary, ferrogo.BackendNativeProcess} {
 		if ferrogo.CapabilitiesOf(b).Call {
 			cases = append(cases, moduleCase{b, nativeRuntime(t)})
@@ -206,7 +206,7 @@ func TestModuleRawCCalls(t *testing.T) {
 		t.Run(string(c.backend), func(t *testing.T) {
 			m := compileLib(t, c)
 			v, err := m.Call(context.Background(), "calculate", ferrogo.Int32(10), ferrogo.Int32(20))
-			if c.backend != ferrogo.BackendWASM {
+			if c.backend != ferrogo.BackendWASM && c.backend != ferrogo.BackendWazy {
 				// Native symbols carry no types: raw calls are refused, not guessed.
 				if !errors.Is(err, ferrogo.ErrFunctionNotFound) {
 					t.Errorf("raw native call: err = %v", err)
@@ -490,7 +490,7 @@ func TestCallRawDeclared(t *testing.T) {
 					t.Errorf("%s = %v, %v; want %s", ch.name, v, err, ch.want)
 				}
 			}
-			if _, err := call("neg", mixSig, ferrogo.Int32(1), ferrogo.Float64(1), ferrogo.Uint64(1)); c.backend == ferrogo.BackendWASM && !errors.Is(err, ferrogo.ErrABIMismatch) {
+			if _, err := call("neg", mixSig, ferrogo.Int32(1), ferrogo.Float64(1), ferrogo.Uint64(1)); (c.backend == ferrogo.BackendWASM || c.backend == ferrogo.BackendWazy) && !errors.Is(err, ferrogo.ErrABIMismatch) {
 				t.Errorf("wrong declared signature on WASM: err = %v, want ErrABIMismatch", err)
 			}
 			if _, err := call("neg", ferrogo.Signature{Params: []ferrogo.Kind{ferrogo.KindInt64}, Result: ferrogo.KindInt64}, ferrogo.Int32(1)); !errors.Is(err, ferrogo.ErrABIMismatch) {

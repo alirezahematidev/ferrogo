@@ -55,7 +55,7 @@ func newCommon(name, usageLine string, stderr io.Writer) *common {
 		fmt.Fprintf(stderr, "Usage: ferrogo %s\n\nFlags:\n", usageLine)
 		fs.PrintDefaults()
 	}
-	fs.StringVar(&c.backend, "backend", "", "execution backend: auto, wasm, native (native-process), native-library")
+	fs.StringVar(&c.backend, "backend", "", "execution backend: auto, wasm, wazy, native (native-process), native-library")
 	fs.StringVar(&c.config, "config", "", "configuration file (default: ./ferrogo.toml if present)")
 	fs.StringVar(&c.profile, "profile", "", "build profile: release or debug")
 	fs.StringVar(&c.edition, "edition", "", "Rust edition (2015, 2018, 2021, 2024)")
