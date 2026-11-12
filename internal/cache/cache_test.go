@@ -2,10 +2,13 @@ package cache
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -211,4 +214,132 @@ func TestWorkDir(t *testing.T) {
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("work dir not removed: %v", err)
 	}
+}
+
+// advancingClock makes every Get old enough to rewrite meta.json, the
+// worst case for concurrent readers of one entry.
+func advancingClock(c *Cache) {
+	var ticks atomic.Int64
+	base := time.Now()
+	c.now = func() time.Time { return base.Add(time.Duration(ticks.Add(1)) * 2 * touchInterval) }
+}
+
+func TestConcurrentGetsSameKey(t *testing.T) {
+	c, err := Open(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advancingClock(c)
+	payload := []byte("\x00asm shared payload")
+	src := writeFile(t, t.TempDir(), "prog.wasm", payload)
+	k := key("hot")
+	if _, err := c.Put(k, src, Meta{}); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				e, ok, err := c.Get(k)
+				if err == nil && !ok {
+					err = errors.New("valid entry reported as a miss")
+				}
+				if err == nil && j%10 == 0 {
+					_, err = c.Put(k, src, Meta{})
+				}
+				if err != nil {
+					errs <- err
+					return
+				}
+				_ = e
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if e, ok, err := c.Get(k); err != nil || !ok {
+		t.Fatalf("entry lost after concurrent use: ok=%v err=%v", ok, err)
+	} else if got, _ := os.ReadFile(e.Path); !bytes.Equal(got, payload) {
+		t.Fatal("artifact content changed")
+	}
+}
+
+func TestFailedTouchKeepsEntry(t *testing.T) {
+	c, err := Open(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advancingClock(c)
+	src := writeFile(t, t.TempDir(), "prog.wasm", []byte("\x00asm payload"))
+	k := key("touch")
+	if _, err := c.Put(k, src, Meta{}); err != nil {
+		t.Fatal(err)
+	}
+	orig := rename
+	rename = func(string, string) error { return fs.ErrPermission }
+	defer func() { rename = orig }()
+	e, ok, err := c.Get(k)
+	if err != nil || !ok {
+		t.Fatalf("failed last-used update broke Get: ok=%v err=%v", ok, err)
+	}
+	if _, err := os.Stat(e.Path); err != nil {
+		t.Fatalf("valid artifact removed: %v", err)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(filepath.Dir(e.Path), ".meta-*")); len(matches) != 0 {
+		t.Fatalf("temp metadata left behind: %v", matches)
+	}
+}
+
+func benchCache(b *testing.B) (*Cache, string, string) {
+	c, err := Open(b.TempDir(), 0)
+	if err != nil {
+		b.Fatal(err)
+	}
+	src := filepath.Join(b.TempDir(), "prog.wasm")
+	if err := os.WriteFile(src, bytes.Repeat([]byte("x"), 64<<10), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	k := key("bench")
+	if _, err := c.Put(k, src, Meta{}); err != nil {
+		b.Fatal(err)
+	}
+	return c, k, src
+}
+
+func BenchmarkCacheGetConcurrent(b *testing.B) {
+	c, k, _ := benchCache(b)
+	var fails atomic.Int64
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, ok, err := c.Get(k); err != nil || !ok {
+				fails.Add(1)
+			}
+		}
+	})
+	b.ReportMetric(float64(fails.Load())/float64(b.N), "fails/op")
+}
+
+func BenchmarkCacheGetPutConcurrent(b *testing.B) {
+	c, k, src := benchCache(b)
+	var fails atomic.Int64
+	b.RunParallel(func(pb *testing.PB) {
+		for i := 0; pb.Next(); i++ {
+			var err error
+			if i%4 == 0 {
+				_, err = c.Put(k, src, Meta{})
+			} else {
+				_, _, err = c.Get(k)
+			}
+			if err != nil {
+				fails.Add(1)
+			}
+		}
+	})
+	b.ReportMetric(float64(fails.Load())/float64(b.N), "fails/op")
 }

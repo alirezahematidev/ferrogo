@@ -419,7 +419,11 @@ The default directory is `os.UserCacheDir()/ferrogo`, overridable with
 `WithCacheDir` or the config file. FerroGo reads no environment variables of
 its own. A size limit is enforced
 after each insert by evicting least-recently-used entries; the access time is
-recorded in `meta.json`.
+recorded in `meta.json`. That time is only an eviction hint: if updating it
+fails (for example while another reader replaces `meta.json` on Windows),
+the lookup still succeeds. An entry is deleted on read only when its
+metadata or content does not match; other read errors are retried briefly
+and then reported, and the entry is kept.
 
 ## 9. Configuration
 
