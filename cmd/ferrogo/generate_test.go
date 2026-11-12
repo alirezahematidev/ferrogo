@@ -101,6 +101,15 @@ func main() {
 	if !bytes.Equal(first, second) || !bytes.Equal(firstWASM, secondWASM) {
 		t.Error("generate is not reproducible")
 	}
+	// The wazy engine produces the same files.
+	if code, errOut := gen("--backend", "wazy"); code != 0 {
+		t.Fatal(errOut)
+	}
+	wazyGo, _ := os.ReadFile(filepath.Join(dir, "ferrogo_generated.go"))
+	wazyWASM, _ := os.ReadFile(filepath.Join(dir, "ferrogo_generated.wasm"))
+	if !bytes.Equal(first, wazyGo) || !bytes.Equal(firstWASM, wazyWASM) {
+		t.Error("generate --backend wazy output differs from --backend wasm")
+	}
 	if code, _ := gen("-check"); code != 0 {
 		t.Error("-check reports fresh output as stale")
 	}
