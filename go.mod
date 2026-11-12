@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/ebitengine/purego v0.11.2
+	github.com/samyfodil/wazy v0.7.0
 	github.com/tetratelabs/wazero v1.12.0
 )
 

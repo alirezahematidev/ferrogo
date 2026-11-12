@@ -57,6 +57,35 @@ sockets, no processes.
   removes the interruption checks. `fib(30)` takes 2.0 ms instead of
   24 ms, but the code can no longer be stopped while it runs.
 
+## wazy (`BackendWazy`, optional)
+
+Same as WASM in every respect: same `wasm32-wasip1` artifacts (built and
+cached once for both), same guest capabilities, limits, sandbox and trust
+rules (allowed for untrusted code). Select it with
+`WithBackend(ferrogo.BackendWazy)` or `--backend wazy`. The difference is
+the engine: [wazy](https://github.com/samyfodil/wazy), a wazero fork whose
+compiled code always checks for interruption (no watcher goroutine per
+call). Consequences:
+
+* `WithWASMInterruption(false)` returns `ErrUnsupported` (after
+  `ErrUntrusted` for untrusted runtimes); it is never ignored.
+* Machine code is cached in its own `wazy` cache subdirectory, never mixed
+  with wazero's.
+* `ferrogo generate --backend wazy` writes the same files as
+  `--backend wasm`; generated code runs on whichever engine its `Runtime`
+  uses.
+
+### wazy vs wazero
+
+| | wazero (`BackendWASM`) | wazy (`BackendWazy`) |
+| --- | --- | --- |
+| Default | yes | no, opt-in |
+| Compile and call speed | baseline | faster; see [performance.md](performance.md#wazero-vs-wazy) |
+| Interruption | watcher per call; can be turned off for trusted code | always compiled in; no opt-out |
+| Memory | allocated per instance | linear-memory buffers come from a process-wide pool, so peak memory with many concurrent one-shot runs is up to about 2x wazero's; buffers are reused, not leaked |
+| Dependency | wazero 1.x (stable API) | wazy pre-1.0 (API may change between minor versions) |
+| Windows | any supported Go | build with Go 1.27.2 or newer (see [security.md](security.md)) |
+
 ## Native process (`BackendNativeProcess`)
 
 **How it works.** Programs are compiled for the Go process's own platform
@@ -147,4 +176,5 @@ code runs inside your Go process with its privileges and its memory.
 | Your own code that needs threads, sockets, or full speed | Native process |
 | Hot function calls into trusted Rust | Native library |
 | Function calls on untrusted code | WASM (`Compile` + `Module.Call`) |
+| Same as WASM on the wazy engine (always interruptible) | wazy (`BackendWazy`) |
 | Portability (same artifact everywhere, embeddable) | WASM |

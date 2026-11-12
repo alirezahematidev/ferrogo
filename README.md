@@ -95,14 +95,17 @@ ferrogo init                        # write ferrogo.toml
 | --- | --- | --- | --- |
 | Status | ✅ | ✅ | ✅ (Linux, macOS, NetBSD, Windows) |
 | Run programs / call functions | ✅ / ✅ | ✅ / ✅ (worker processes) | — / ✅ |
-| Runs | `wasm32-wasip1` in [wazero](https://wazero.io) | host executable as a child process | `.so`/`.dylib`/`.dll` loaded in-process |
+| Runs | `wasm32-wasip1` in [wazero](https://wazero.io), or optionally [wazy](https://github.com/samyfodil/wazy) (`BackendWazy`) | host executable as a child process | `.so`/`.dylib`/`.dll` loaded in-process |
 | Sandbox | **yes**: no FS/network/env unless granted | no (your user's privileges) | no (your process) |
 | Allowed for untrusted code | yes | no: needs `WithTrust(Trusted)` | no: needs `WithTrust(Trusted)` |
 | Timeouts interrupt running code | yes | yes (process-group kill) | no |
 | Memory limit | yes | no (returns `ErrUnsupported`) | no |
 | Threads, sockets | no | yes | yes |
 
-`BackendAuto` always means WASM. FerroGo never silently falls back to a
+`BackendWazy` runs the same artifacts with the same sandbox on the wazy
+engine, which is faster but always interruptible and pre-1.0; see
+[docs/backends.md](docs/backends.md#wazy-vs-wazero).
+`BackendAuto` always means WASM (wazero). FerroGo never silently falls back to a
 native backend. `ferrogo.CapabilitiesOf(b)` reports capabilities at run time,
 and `rt.Inspect(ctx)` reports what is usable on this machine. Details:
 [docs/backends.md](docs/backends.md).

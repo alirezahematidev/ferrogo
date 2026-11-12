@@ -27,6 +27,7 @@ Covered by `TestRunArgumentsAreNotShellInterpreted` and
 | Backend | Isolation | Allowed by default |
 | --- | --- | --- |
 | WASM | Memory-safe sandbox. No filesystem, network or host environment unless granted (`WithMount`, `WithEnv`). Memory, time and output limits. | yes |
+| wazy (`BackendWazy`, opt-in) | Same as WASM, on the wazy engine (a wazero fork). Same guarantees, same tests (`TestWASMSuiteOnWazy`). | yes |
 | Native process | OS process. Same user, same privileges, full filesystem and network. | **no**: requires `WithTrust(ferrogo.Trusted)` |
 | Native library | None. Code runs inside your Go process, and calls cannot be interrupted. Unenforceable options (timeouts, memory limits, mounts, env) are rejected. | **no**: requires `WithTrust(ferrogo.Trusted)` |
 
@@ -125,6 +126,17 @@ rejects an explicit `WithTimeout`.
 Compiled code is cached **separately** for each setting. wazero's cache key
 does not include the setting, so a shared cache would let uninterruptible
 code reach untrusted runs. This is covered by `TestWASMInterruptionOptOut`.
+
+The wazy backend (`BackendWazy`) always compiles the checks in, so there it
+returns `ErrUnsupported` instead; it is never silently ignored. wazy keeps
+its compiled code in its own cache directory.
+
+On Windows, build programs that use `BackendWazy` with Go 1.27.2 or newer.
+wazy's WASI file system uses `os.Root`, and in older Go releases
+`os.Root.Mkdir`/`MkdirAll` could follow an NTFS junction out of the root
+(GO-2026-6604), which would let a guest create directories outside a
+mounted directory. The wazero backend does not use `os.Root` and is not
+affected.
 
 ## Choosing settings
 

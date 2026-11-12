@@ -41,7 +41,7 @@ func cmdGenerate(ctx context.Context, out *output, _ io.Reader, args []string) e
 	if len(positional) == 1 {
 		dir = positional[0]
 	}
-	if c.backend != "" && c.backend != "wasm" && c.backend != "auto" {
+	if c.backend != "" && c.backend != "wasm" && c.backend != "wazy" && c.backend != "auto" {
 		return fmt.Errorf("generate embeds WebAssembly; --backend %s is not supported", c.backend)
 	}
 
@@ -83,7 +83,10 @@ func cmdGenerate(ctx context.Context, out *output, _ io.Reader, args []string) e
 		}
 	}
 
-	c.backend = "wasm"
+	// Both WebAssembly engines share the artifact, so the output does not depend on the engine.
+	if c.backend != "wazy" {
+		c.backend = "wasm"
+	}
 	rt, err := c.runtime(out)
 	if err != nil {
 		return err

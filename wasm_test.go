@@ -14,6 +14,31 @@ import (
 	"github.com/alirezahematidev/ferrogo"
 )
 
+// testWASMBackend is the WASM engine the TestWASM* suite runs on: wasm by
+// default; TestWASMSuiteOnWazy re-runs the suite with it set to wazy.
+var testWASMBackend = func() ferrogo.Backend {
+	if os.Getenv("FERROGO_TEST_WASM_BACKEND") == "wazy" {
+		return ferrogo.BackendWazy
+	}
+	return ferrogo.BackendWASM
+}()
+
+// TestWASMSuiteOnWazy runs every TestWASM* and host-function test again on
+// the wazy backend, in a child test process.
+func TestWASMSuiteOnWazy(t *testing.T) {
+	if testWASMBackend == ferrogo.BackendWazy {
+		t.Skip("already running on wazy")
+	}
+	wasmRuntime(t) // same skips as the suite
+	cmd := exec.Command(os.Args[0], "-test.run=^(TestWASM|TestHostFunctions)", "-test.count=1", "-test.v")
+	cmd.Env = append(os.Environ(), "FERROGO_TEST_WASM_BACKEND=wazy")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("suite on wazy: %v\n%s", err, out)
+	}
+	t.Logf("suite on wazy passed:\n%s", out)
+}
+
 // wasmRuntime returns a runtime with default settings (BackendAuto = WASM,
 // Untrusted), skipping when the toolchain or the wasm32-wasip1 target is
 // missing.
@@ -25,7 +50,11 @@ func wasmRuntime(t *testing.T, opts ...ferrogo.Option) *ferrogo.Runtime {
 	if _, err := exec.LookPath("rustc"); err != nil {
 		t.Skip("rustc not installed")
 	}
-	rt, err := ferrogo.New(append([]ferrogo.Option{ferrogo.WithCacheDir(sharedCache)}, opts...)...)
+	base := []ferrogo.Option{ferrogo.WithCacheDir(sharedCache)}
+	if testWASMBackend != ferrogo.BackendWASM {
+		base = append(base, ferrogo.WithBackend(testWASMBackend))
+	}
+	rt, err := ferrogo.New(append(base, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +83,7 @@ func TestWASMIsTheDefaultAndNeedsNoTrust(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Stdout != "Hello from Rust!\n" || res.Backend != ferrogo.BackendWASM || res.Artifact.Target != "wasm32-wasip1" {
+	if res.Stdout != "Hello from Rust!\n" || res.Backend != testWASMBackend || res.Artifact.Target != "wasm32-wasip1" {
 		t.Errorf("result = %+v", res)
 	}
 	if res.Usage.PeakMemoryBytes == 0 {
@@ -329,6 +358,13 @@ func TestWASMInterruptionOptOut(t *testing.T) {
 		t.Fatalf("untrusted opt-out: err = %v", err)
 	}
 	rt := wasmRuntime(t, ferrogo.WithTrust(ferrogo.Trusted))
+	if testWASMBackend == ferrogo.BackendWazy {
+		// wazy always checks for interruption, so the opt-out must fail loudly.
+		if _, err := rt.Run(ctx, ferrogo.Code(spinOrFib), ferrogo.WithWASMInterruption(false)); !errors.Is(err, ferrogo.ErrUnsupported) {
+			t.Fatalf("wazy opt-out: err = %v, want ErrUnsupported", err)
+		}
+		return
+	}
 	if _, err := rt.Run(ctx, ferrogo.Code(spinOrFib), ferrogo.WithWASMInterruption(false), ferrogo.WithTimeout(time.Second)); !errors.Is(err, ferrogo.ErrUnsupported) {
 		t.Fatalf("explicit timeout without interruption: err = %v", err)
 	}
