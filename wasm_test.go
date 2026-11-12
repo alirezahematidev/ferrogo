@@ -145,8 +145,9 @@ func TestWASMSleepIsInterruptible(t *testing.T) {
 		t.Errorf("sleep outlived its timeout: %s", elapsed)
 	}
 
-	// Short sleeps really sleep.
-	res, err := rt.Run(context.Background(), ferrogo.Code(`fn main() { let t = std::time::Instant::now(); std::thread::sleep(std::time::Duration::from_millis(50)); println!("{}", t.elapsed().as_millis() >= 50); }`))
+	// Short sleeps really sleep. The 5 ms of slack covers timer granularity,
+	// which on Windows can return a 50 ms sleep a few hundred µs early.
+	res, err := rt.Run(context.Background(), ferrogo.Code(`fn main() { let t = std::time::Instant::now(); std::thread::sleep(std::time::Duration::from_millis(50)); println!("{}", t.elapsed().as_millis() >= 45); }`))
 	if err != nil || res.Stdout != "true\n" {
 		t.Errorf("sleep: %v %q", err, res.Stdout)
 	}
